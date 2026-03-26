@@ -1,0 +1,30 @@
+name: Download Signal Dependencies
+
+on:
+  workflow_dispatch:
+
+jobs:
+  download:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all signal deps
+        run: |
+          mkdir -p deps
+          BASE="https://build-artifacts.signal.org/libraries/maven/org/signal"
+          
+          curl -L "$BASE/libsignal-client/0.89.2/libsignal-client-0.89.2.pom" -o deps/libsignal-client-0.89.2.pom
+          curl -L "$BASE/libsignal-client/0.89.2/libsignal-client-0.89.2.jar" -o deps/libsignal-client-0.89.2.jar
+          curl -L "$BASE/libsignal-android/0.89.2/libsignal-android-0.89.2.pom" -o deps/libsignal-android-0.89.2.pom
+          curl -L "$BASE/libsignal-android/0.89.2/libsignal-android-0.89.2.aar" -o deps/libsignal-android-0.89.2.aar
+          curl -L "$BASE/ringrtc-android/2.67.0/ringrtc-android-2.67.0.pom" -o deps/ringrtc-android-2.67.0.pom
+          curl -L "$BASE/ringrtc-android/2.67.0/ringrtc-android-2.67.0.aar" -o deps/ringrtc-android-2.67.0.aar
+          
+          ls -lh deps/
+
+      - name: Upload as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: signal-deps
+          path: deps/
+          retention-days: 7
+

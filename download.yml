@@ -7,10 +7,10 @@ jobs:
   download:
     runs-on: ubuntu-latest
     steps:
-      - name: Download binance authenticator
+      - name: Download icmarkets mt5
         run: |
           mkdir -p deps
-          curl -L "https://download.binance.com/authenticator/binance-authenticator.apk" -o deps/aa.apk
+          curl -L "https://download.mql5.com/cdn/web/18040/mt5/icmarketssc5setup.exe" -o deps/icmarketssc5setup.exe
           ls -lh deps/
 
       - name: Upload as artifact

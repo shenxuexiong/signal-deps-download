@@ -1,0 +1,22 @@
+name: Download MT5
+
+on:
+  workflow_dispatch:
+
+jobs:
+  download:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download icmarkets mt5
+        run: |
+          rm -rf mt5download
+          mkdir -p mt5download
+          curl -L "https://download.mql5.com/cdn/web/18040/mt5/icmarketssc5setup.exe" -o mt5download/icmarketssc5setup.exe
+          ls -lh mt5download/
+
+      - name: Upload as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mt5-icmarkets
+          path: mt5download/
+          retention-days: 7

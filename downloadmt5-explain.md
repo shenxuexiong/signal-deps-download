@@ -1,39 +1,104 @@
-# GitHub Actions 工作流缓存问题解释
+name: download_readid_with_logs
 
-## 问题原因
+on:
+  workflow_dispatch:
+    inputs:
+      app_id:
+        description: 'APKPure 上的应用 ID (例如 com.readid.ready)'
+        required: true
+        default: 'com.readid.ready'
+      app_name:
+        description: '下载后保存的文件名前缀'
+        required: true
+        default: 'readid_ready'
 
-GitHub Actions 的 runner（运行器）会在同一台机器上重复使用，每次 workflow run 之间 **工作目录不会自动清空**。
+jobs:
+  download:
+    runs-on: ubuntu-latest
+    steps:
+      # 1. 清理环境
+      - name: 🧹 强制清理环境
+        run: |
+          find . -mindepth 1 ! -name '.git' ! -path './.git/*' -exec rm -rf {} +
+          echo "✅ 环境已清空"
 
-旧项目 (`signal-deps-download`) 中：
-1. 最初运行下载了 Signal 库文件（libsignal-android、libsignal-client 等）到 `deps/` 目录
-2. 后来修改 workflow 想下载 mt5，虽然加了 `rm -rf deps`，但 runner 可能在执行前已经加载了旧的工作目录状态
-3. 结果上传的 artifact 仍然包含旧的 Signal 文件（显示 358MB）
+      # 2. 下载网页并提取链接（加入详细日志）
+      - name: 🔍 获取链接并记录日志
+        id: get_link
+        run: |
+          APP_ID="${{ github.event.inputs.app_id }}"
+          DETAIL_PAGE="https://apkpure.com/${APP_ID}/download"
+          
+          echo "📝 [日志] 正在访问详情页: $DETAIL_PAGE"
+          
+          # 下载网页源码
+          curl -s -L -H "User-Agent: Mozilla/5.0" "$DETAIL_PAGE" -o page_source.html
+          
+          # 记录网页大小，确认是否下载成功
+          PAGE_SIZE=$(stat -c%s page_source.html)
+          echo "📝 [日志] 网页源码下载完成，文件大小: $PAGE_SIZE 字节"
+          
+          # --- 核心：尝试提取链接 ---
+          # 尝试匹配 1: 包含 download 的链接
+          REAL_URL=$(grep -oP '(?<=href=")[^"]*download[^"]*\.apk(?=")' page_source.html | head -n 1)
+          
+          # 尝试匹配 2: 包含 dl/apk 的链接
+          if [ -z "$REAL_URL" ]; then
+             echo "📝 [日志] 尝试匹配方案 B..."
+             REAL_URL=$(grep -oP '(?<=href=")[^"]*dl/apk[^"]*' page_source.html | head -n 1)
+          fi
+          
+          # 补全链接
+          if [[ $REAL_URL == /* ]]; then
+             REAL_URL="https://apkpure.com$REAL_URL"
+          fi
 
-## 为什么新项目成功
+          # --- 记录调试信息 ---
+          echo "📝 [日志] 提取到的原始链接: $REAL_URL"
+          
+          # 把网页源码复制到输出目录，方便后续作为 Artifact 上传查看
+          cp page_source.html debug_page_source.html
 
-新项目 (`downloadmt5`) 从未运行过 Signal 下载工作流：
-1. runner 环境是完全干净的
-2. 只下载了 mt5.exe（4.9MB）
-3. artifact 只包含一个文件
+          echo "url=$REAL_URL" >> $GITHUB_OUTPUT
 
-## 正确做法
+      # 3. 下载 APK
+      - name: 📥 下载 APK 文件
+        run: |
+          mkdir -p readid_apk_dl
+          
+          REAL_URL="${{ steps.get_link.outputs.url }}"
+          APP_NAME="${{ github.event.inputs.app_name }}"
+          
+          # 记录下载日志
+          echo "📝 [日志] 准备下载 APK..."
+          echo "📝 [日志] 目标链接: $REAL_URL"
+          
+          if [ -z "$REAL_URL" ]; then
+            echo "❌ [错误日志] 未能提取到下载链接！请检查 debug_page_source.html"
+            # 即使失败，也创建一个空文件占位，防止后续步骤报错
+            touch readid_apk_dl/ERROR_NO_LINK_FOUND.txt
+          else
+            # 执行下载
+            HTTP_CODE=$(curl -L -w "%{http_code}" -H "User-Agent: Mozilla/5.0" "$REAL_URL" -o "readid_apk_dl/${APP_NAME}.apk")
+            
+            if [ "$HTTP_CODE" == "200" ]; then
+               echo "✅ [日志] 下载成功！HTTP状态码: $HTTP_CODE"
+            else
+               echo "⚠️ [日志] 下载可能失败，HTTP状态码: $HTTP_CODE"
+            fi
+          fi
+          
+          # 列出最终文件
+          echo "📝 [日志] 最终目录内容:"
+          ls -lh readid_apk_dl/
 
-如果要在旧项目下载新文件，必须确保：
-
-```yaml
-steps:
-  - name: Download
-    run: |
-      # 使用全新的目录名
-      rm -rf newdownload
-      mkdir -p newdownload
-      curl -L "URL" -o newdownload/file.exe
-```
-
-或者创建**新的 workflow 文件**，确保没有历史缓存污染。
-
-## 经验总结
-
-1. **每个不同的下载任务用独立的 workflow 文件**，避免混淆
-2. **每个下载任务用独立的目录名**，避免残留文件混入
-3. GitHub Actions 的 artifact 和 runner 缓存是分开的——artifact 不会影响后续 run，但 runner 工作目录会保留文件
+      # 4. 上传所有东西 (APK + 日志 + 网页源码)
+      - name: 📤 上传 Artifact (包含日志)
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ github.event.inputs.app_name }}-result-with-logs
+          # 这里我们上传整个目录，里面包含了 APK 和 调试用的网页源码
+          path: |
+            readid_apk_dl/
+            debug_page_source.html
+          retention-days: 5

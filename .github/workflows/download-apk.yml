@@ -1,0 +1,174 @@
+name: Download APK from APKPure
+
+on:
+  workflow_dispatch:
+    inputs:
+      app_id:
+        description: 'APKPure 上的应用 ID (例如 com.estrongs.android.pop)'
+        required: true
+        default: 'com.estrongs.android.pop'
+      app_name:
+        description: '下载后保存的文件名前缀'
+        required: true
+        default: 'esfileexplorer'
+
+env:
+  # 使用唯一目录名，避免任何缓存污染
+  DOWNLOAD_DIR: apk_download_${{ github.run_id }}_${{ github.run_attempt }}
+
+jobs:
+  download:
+    runs-on: ubuntu-latest
+    steps:
+      # 1. 完全清理环境 - 删除所有非git文件
+      - name: 🧹 完全清理环境
+        run: |
+          echo "=== 清理前目录内容 ==="
+          ls -la
+          echo ""
+          # 删除所有文件和目录，除了.git
+          find . -mindepth 1 -maxdepth 1 ! -name '.git' -exec rm -rf {} + 2>/dev/null || true
+          echo "=== 清理后目录内容 ==="
+          ls -la
+          echo "✅ 环境已完全清理"
+
+      # 2. 访问 APKPure 获取下载链接
+      - name: 🔍 从 APKPure 获取下载链接
+        id: get_link
+        run: |
+          APP_ID="${{ github.event.inputs.app_id }}"
+          DETAIL_PAGE="https://apkpure.com/cn/${APP_ID}/download"
+
+          echo "📝 正在访问: $DETAIL_PAGE"
+
+          # 下载网页源码
+          curl -s -L \
+            -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
+            -H "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8" \
+            -H "Accept-Language: zh-CN,zh;q=0.9,en;q=0.8" \
+            --connect-timeout 30 \
+            --max-time 60 \
+            "$DETAIL_PAGE" -o page_source.html
+
+          if [ ! -f page_source.html ]; then
+            echo "❌ 无法下载页面"
+            exit 1
+          fi
+
+          PAGE_SIZE=$(stat -c%s page_source.html 2>/dev/null || echo "0")
+          echo "📝 网页下载完成，大小: $PAGE_SIZE 字节"
+
+          # 检查是否被拦截或返回错误页
+          if grep -q "403 Forbidden\|Access Denied\|Cloudflare" page_source.html; then
+            echo "⚠️ 可能遇到反爬虫拦截"
+          fi
+
+          # 提取下载链接 - 方法1: 标准APK链接
+          REAL_URL=$(grep -oP 'https?://[^"<>\s]+\.apk[^"<>\s]*' page_source.html | head -n 1)
+
+          # 方法2: 如果失败，尝试提取相对路径链接
+          if [ -z "$REAL_URL" ]; then
+            echo "📝 尝试提取相对路径..."
+            REAL_URL=$(grep -oP '(?<=href=")[^"]*download[^"]*apk[^"]*(?=")' page_source.html | head -n 1)
+            if [[ $REAL_URL == /* ]]; then
+              REAL_URL="https://apkpure.com${REAL_URL}"
+            fi
+          fi
+
+          # 方法3: 尝试匹配 data-href 属性
+          if [ -z "$REAL_URL" ]; then
+            echo "📝 尝试 data-href 属性..."
+            REAL_URL=$(grep -oP '(?<=data-href=")[^"]*apk[^"]*(?=")' page_source.html | head -n 1)
+          fi
+
+          echo "📝 提取到的链接: $REAL_URL"
+
+          # 保存到输出
+          echo "url=$REAL_URL" >> $GITHUB_OUTPUT
+          echo "page_size=$PAGE_SIZE" >> $GITHUB_OUTPUT
+
+      # 3. 下载 APK 文件
+      - name: 📥 下载 APK
+        id: download_apk
+        run: |
+          APP_NAME="${{ github.event.inputs.app_name }}"
+          REAL_URL="${{ steps.get_link.outputs.url }}"
+          mkdir -p "$DOWNLOAD_DIR"
+
+          echo "📝 下载目录: $DOWNLOAD_DIR"
+          echo "📝 目标链接: $REAL_URL"
+
+          if [ -z "$REAL_URL" ]; then
+            echo "❌ 未能提取到下载链接"
+            # 保存调试信息
+            cp page_source.html "$DOWNLOAD_DIR/debug_page.html"
+            echo "ERROR: No download link found" > "$DOWNLOAD_DIR/ERROR.txt"
+            exit 1
+          fi
+
+          # 下载APK文件
+          echo "📝 开始下载..."
+          HTTP_CODE=$(curl -L -w "%{http_code}" -o "$DOWNLOAD_DIR/${APP_NAME}.apk" \
+            -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
+            -H "Accept: application/vnd.android.package-archive,application/octet-stream,*/*" \
+            --connect-timeout 60 \
+            --max-time 300 \
+            "$REAL_URL" 2>&1)
+
+          echo "📝 HTTP 状态码: $HTTP_CODE"
+
+          # 检查下载结果
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "❌ 下载失败，HTTP状态码: $HTTP_CODE"
+            cp page_source.html "$DOWNLOAD_DIR/debug_page.html"
+            exit 1
+          fi
+
+          # 验证文件大小
+          FILE_SIZE=$(stat -c%s "$DOWNLOAD_DIR/${APP_NAME}.apk" 2>/dev/null || echo "0")
+          echo "📝 下载文件大小: $FILE_SIZE 字节"
+
+          if [ "$FILE_SIZE" -lt 1024 ]; then
+            echo "❌ 文件太小，可能下载失败"
+            cat "$DOWNLOAD_DIR/${APP_NAME}.apk"
+            exit 1
+          fi
+
+          # 验证是否为APK文件 (ZIP格式)
+          FILE_TYPE=$(file -b "$DOWNLOAD_DIR/${APP_NAME}.apk")
+          echo "📝 文件类型: $FILE_TYPE"
+
+          if ! echo "$FILE_TYPE" | grep -qi "zip\|android"; then
+            echo "⚠️ 警告: 文件可能不是有效的APK"
+          fi
+
+          # 保存调试信息
+          cp page_source.html "$DOWNLOAD_DIR/page_source.html"
+
+          echo "✅ 下载完成"
+          echo "file_size=$FILE_SIZE" >> $GITHUB_OUTPUT
+
+      # 4. 上传 Artifact
+      - name: 📤 上传 Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ github.event.inputs.app_name }}_${{ github.run_id }}
+          path: ${{ env.DOWNLOAD_DIR }}/
+          retention-days: 7
+          if-no-files-found: error
+
+      # 5. 输出摘要
+      - name: 📋 任务摘要
+        if: always()
+        run: |
+          echo "========== 下载任务摘要 =========="
+          echo "应用ID: ${{ github.event.inputs.app_id }}"
+          echo "应用名称: ${{ github.event.inputs.app_name }}"
+          echo "下载目录: $DOWNLOAD_DIR"
+          echo "Run ID: ${{ github.run_id }}"
+          echo "=================================="
+
+          if [ -d "$DOWNLOAD_DIR" ]; then
+            echo "目录内容:"
+            ls -lh "$DOWNLOAD_DIR/"
+          fi

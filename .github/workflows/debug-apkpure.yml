@@ -1,0 +1,86 @@
+name: Debug APKPure Page Structure
+
+on:
+  workflow_dispatch:
+    inputs:
+      app_id:
+        description: 'APKPure 应用 ID'
+        required: true
+        default: 'com.estrongs.android.pop'
+
+jobs:
+  debug:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 🧹 清理环境
+        run: rm -rf * .[^.]* 2>/dev/null || true
+
+      - name: 🔍 下载并分析 APKPure 页面
+        run: |
+          APP_ID="${{ github.event.inputs.app_id }}"
+          mkdir -p debug_output
+
+          # 1. 下载页面
+          echo "📝 下载页面: https://apkpure.com/cn/${APP_ID}/download"
+          curl -s -L \
+            -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
+            -H "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8" \
+            -H "Accept-Language: zh-CN,zh;q=0.9,en;q=0.8" \
+            --connect-timeout 30 \
+            --max-time 60 \
+            "https://apkpure.com/cn/${APP_ID}/download" -o debug_output/page_full.html
+
+          PAGE_SIZE=$(stat -c%s debug_output/page_full.html)
+          echo "📝 页面大小: $PAGE_SIZE 字节"
+
+          # 2. 提取所有包含 .apk 的链接到文本文件
+          echo "=== 所有包含 .apk 的链接 ===" > debug_output/apk_links.txt
+          grep -oP '[^"<>\s]*\.apk[^"<>\s]*' debug_output/page_full.html >> debug_output/apk_links.txt 2>/dev/null || echo "未找到 .apk 链接"
+
+          # 3. 提取所有 download 相关的链接
+          echo "" >> debug_output/apk_links.txt
+          echo "=== 所有包含 download 的链接 ===" >> debug_output/apk_links.txt
+          grep -oP 'https?://[^"<>\s]*download[^"<>\s]*' debug_output/page_full.html >> debug_output/apk_links.txt 2>/dev/null || echo "未找到 download 链接"
+
+          # 4. 提取所有 href 属性
+          echo "" >> debug_output/apk_links.txt
+          echo "=== 所有 href 属性 ===" >> debug_output/apk_links.txt
+          grep -oP '(?<=href=")[^"]+' debug_output/page_full.html | head -50 >> debug_output/apk_links.txt
+
+          # 5. 提取所有 data-href 属性
+          echo "" >> debug_output/apk_links.txt
+          echo "=== 所有 data-href 属性 ===" >> debug_output/apk_links.txt
+          grep -oP '(?<=data-href=")[^"]+' debug_output/page_full.html | head -50 >> debug_output/apk_links.txt
+
+          # 6. 提取所有可能包含下载链接的按钮/链接相关属性
+          echo "" >> debug_output/apk_links.txt
+          echo "=== 所有可能相关的属性 ===" >> debug_output/apk_links.txt
+          grep -oP '(?<=data-dt-url=")[^"]+' debug_output/page_full.html | head -20 >> debug_output/apk_links.txt 2>/dev/null || true
+          grep -oP '(?<=data-url=")[^"]+' debug_output/page_full.html | head -20 >> debug_output/apk_links.txt 2>/dev/null || true
+
+          # 7. 提取页面标题，确认页面内容正确
+          echo "" >> debug_output/apk_links.txt
+          echo "=== 页面标题 ===" >> debug_output/apk_links.txt
+          grep -oP '(?<=<title>)[^<]+' debug_output/page_full.html >> debug_output/apk_links.txt
+
+          # 8. 显示摘要
+          echo ""
+          echo "========== 分析摘要 =========="
+          cat debug_output/apk_links.txt
+          echo "=============================="
+
+      - name: 📤 上传调试信息
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug_apkpure_${{ github.event.inputs.app_id }}_${{ github.run_id }}
+          path: debug_output/
+          retention-days: 7
+
+      - name: 📋 完成提示
+        run: |
+          echo "✅ 调试完成！"
+          echo "请下载 artifact: debug_apkpure_${{ github.event.inputs.app_id }}_${{ github.run_id }}"
+          echo ""
+          echo "文件说明:"
+          echo "- page_full.html: 完整的页面源码"
+          echo "- apk_links.txt: 提取的所有相关链接"

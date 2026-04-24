@@ -1,4 +1,4 @@
-name: Download Signal Dependencies
+name: download_readid_ready
 
 on:
   workflow_dispatch:
@@ -7,17 +7,26 @@ jobs:
   download:
     runs-on: ubuntu-latest
     steps:
-      - name: Download icmarkets mt5
+      - name: Download ReadID Ready APK
         run: |
-          rm -rf mt5download
-          mkdir -p mt5download
-          curl -L "https://download.mql5.com/cdn/web/18040/mt5/icmarketssc5setup.exe" -o mt5download/icmarketssc5setup.exe
-          ls -lh mt5download/
+          # 1. 使用全新的目錄名，絕對不與 mt5 或 signal 重疊
+          rm -rf readiddownload
+          mkdir -p readiddownload
+          
+          # 2. 這是 APKPure 的 API 下載直連地址
+          # 模仿你 curl -L 的寫法，加上模擬瀏覽器的 User-Agent 確保下載成功
+          curl -L -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" \
+               "https://apkpure.com" \
+               -o readiddownload/readid_ready.apk
+          
+          # 3. 打印列表確認文件大小
+          ls -lh readiddownload/
 
       - name: Upload as artifact
         uses: actions/upload-artifact@v4
         with:
-          name: mt5-icmarkets
-          path: mt5download/
-          retention-days: 7
+          # 這裡也用全新的 artifact 名稱
+          name: readid-ready-package
+          path: readiddownload/
+          retention-days: 1
 

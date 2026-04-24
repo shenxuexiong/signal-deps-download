@@ -1,0 +1,123 @@
+name: Download APK (Alternative Sources)
+
+on:
+  workflow_dispatch:
+    inputs:
+      app_id:
+        description: '应用包名 (例如 com.estrongs.android.pop)'
+        required: true
+        default: 'com.estrongs.android.pop'
+      app_name:
+        description: '保存文件名'
+        required: true
+        default: 'esfileexplorer'
+      source:
+        description: '下载源 (apkmirror/fdroid/github/direct)'
+        required: true
+        default: 'apkmirror'
+      direct_url:
+        description: '直接下载链接 (source=direct 时使用)'
+        required: false
+        default: ''
+
+jobs:
+  download:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 🧹 清理环境
+        run: rm -rf * .[^.]* 2>/dev/null || true
+
+      - name: 📥 下载 APK
+        id: download
+        run: |
+          APP_ID="${{ github.event.inputs.app_id }}"
+          APP_NAME="${{ github.event.inputs.app_name }}"
+          SOURCE="${{ github.event.inputs.source }}"
+          DIRECT_URL="${{ github.event.inputs.direct_url }}"
+
+          mkdir -p output
+
+          case "$SOURCE" in
+            apkmirror)
+              echo "📝 尝试从 APKMirror 下载..."
+              # APKMirror 页面结构
+              DETAIL_URL="https://www.apkmirror.com/apk/$(echo $APP_ID | tr '.' '-')/"
+              echo "📝 详情页: $DETAIL_URL"
+
+              curl -s -L \
+                -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
+                -H "Accept-Language: en-US,en;q=0.9" \
+                --connect-timeout 30 \
+                --max-time 60 \
+                "$DETAIL_URL" -o page.html
+
+              # 提取下载链接
+              DOWNLOAD_LINK=$(grep -oP 'href="[^"]*download[^"]*\.apk[^"]*"' page.html | head -1 | sed 's/href="//;s/"$//')
+              if [ -n "$DOWNLOAD_LINK" ]; then
+                if [[ $DOWNLOAD_LINK != http* ]]; then
+                  DOWNLOAD_LINK="https://www.apkmirror.com${DOWNLOAD_LINK}"
+                fi
+              fi
+              ;;
+
+            fdroid)
+              echo "📝 尝试从 F-Droid 下载..."
+              # F-Droid 直接下载链接格式
+              DOWNLOAD_LINK="https://f-droid.org/repo/${APP_ID}_latest.apk"
+              ;;
+
+            github)
+              echo "📝 尝试从 GitHub Releases 下载..."
+              # 需要手动指定 GitHub repo
+              echo "⚠️ 请使用 direct 源并提供 GitHub release 的直接下载链接"
+              exit 1
+              ;;
+
+            direct)
+              echo "📝 使用直接下载链接..."
+              DOWNLOAD_LINK="$DIRECT_URL"
+              ;;
+
+            *)
+              echo "❌ 未知下载源: $SOURCE"
+              exit 1
+              ;;
+          esac
+
+          echo "📝 下载链接: $DOWNLOAD_LINK"
+
+          if [ -z "$DOWNLOAD_LINK" ]; then
+            echo "❌ 未能获取下载链接"
+            cp page.html output/debug_page.html 2>/dev/null || true
+            exit 1
+          fi
+
+          # 下载文件
+          echo "📝 开始下载..."
+          HTTP_CODE=$(curl -L -w "%{http_code}" -o "output/${APP_NAME}.apk" \
+            -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
+            -H "Accept: application/vnd.android.package-archive,application/octet-stream,*/*" \
+            --connect-timeout 60 \
+            --max-time 300 \
+            "$DOWNLOAD_LINK" 2>&1)
+
+          echo "📝 HTTP 状态码: $HTTP_CODE"
+
+          # 验证文件
+          FILE_SIZE=$(stat -c%s "output/${APP_NAME}.apk" 2>/dev/null || echo "0")
+          echo "📝 文件大小: $FILE_SIZE 字节"
+
+          if [ "$FILE_SIZE" -lt 1024 ]; then
+            echo "❌ 文件太小，可能下载失败"
+            cat "output/${APP_NAME}.apk"
+            exit 1
+          fi
+
+          echo "✅ 下载完成"
+
+      - name: 📤 上传 Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ github.event.inputs.app_name }}_${{ github.run_id }}
+          path: output/
+          retention-days: 7

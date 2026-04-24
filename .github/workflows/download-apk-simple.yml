@@ -1,0 +1,78 @@
+name: Download APK (Direct Link)
+
+on:
+  workflow_dispatch:
+    inputs:
+      download_url:
+        description: 'APK 直接下载链接 (必需)'
+        required: true
+        default: ''
+      app_name:
+        description: '保存文件名 (不含扩展名)'
+        required: true
+        default: 'app'
+      referer:
+        description: 'Referer 头 (可选，部分网站需要)'
+        required: false
+        default: ''
+
+jobs:
+  download:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 🧹 清理环境
+        run: rm -rf * .[^.]* 2>/dev/null || true
+
+      - name: 📥 下载 APK
+        run: |
+          URL="${{ github.event.inputs.download_url }}"
+          NAME="${{ github.event.inputs.app_name }}"
+          REFERER="${{ github.event.inputs.referer }}"
+
+          mkdir -p output
+
+          echo "📝 下载链接: $URL"
+          echo "📝 文件名: ${NAME}.apk"
+
+          if [ -z "$URL" ]; then
+            echo "❌ 下载链接不能为空"
+            exit 1
+          fi
+
+          # 构建 curl 命令
+          CURL_OPTS="-L -w %{http_code} -o output/${NAME}.apk \
+            -H 'User-Agent: Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36' \
+            -H 'Accept: application/vnd.android.package-archive,application/octet-stream,*/*'"
+
+          if [ -n "$REFERER" ]; then
+            CURL_OPTS="$CURL_OPTS -H 'Referer: $REFERER'"
+          fi
+
+          # 执行下载
+          HTTP_CODE=$(eval "curl $CURL_OPTS --connect-timeout 60 --max-time 300 '$URL'" 2>&1)
+
+          echo "📝 HTTP 状态码: $HTTP_CODE"
+
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "❌ 下载失败"
+            exit 1
+          fi
+
+          # 验证文件
+          FILE_SIZE=$(stat -c%s "output/${NAME}.apk" 2>/dev/null || echo "0")
+          echo "📝 文件大小: $FILE_SIZE 字节"
+
+          if [ "$FILE_SIZE" -lt 1024 ]; then
+            echo "❌ 文件太小"
+            cat "output/${NAME}.apk"
+            exit 1
+          fi
+
+          echo "✅ 下载成功: ${NAME}.apk (${FILE_SIZE} 字节)"
+
+      - name: 📤 上传 Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ github.event.inputs.app_name }}_${{ github.run_id }}
+          path: output/
+          retention-days: 7
